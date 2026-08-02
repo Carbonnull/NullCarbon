@@ -105,18 +105,32 @@ export class ProofService {
     try {
       const { txHash } = await this.submitComplianceToSoroban(proof, publicInputs);
 
+      const corridorId = `compliance:${publicInputs.periodId}`;
       await this.nullifierService.record(
         publicInputs.complianceNullifier,
-        'compliance',
+        corridorId,
         txHash,
       );
 
-      const now = new Date();
-      const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-      const seq = String(Math.floor(Math.random() * 100000)).padStart(5, '0');
-      const complianceCertificateId = `COMP-${dateStr}-${seq}`;
+      // Persist the compliance claim as an auditable certificate so that
+      // GET /compliance/status/:companyId can return a verifiable result.
+      const certificate = await this.certificateService.addCertificate(
+        {
+          nullifier: publicInputs.complianceNullifier,
+          corridorId,
+          volumeCommitment: publicInputs.nullifierSetRoot,
+          stellarTxHash: txHash,
+          verifiable: true,
+          timestamp: new Date().toISOString(),
+        },
+        'COMP',
+      );
 
-      return { compliant: true, txHash, complianceCertificateId };
+      return {
+        compliant: true,
+        txHash,
+        complianceCertificateId: certificate.certificateId,
+      };
     } catch (err: any) {
       return { compliant: false, error: err?.message || 'Compliance relay failed' };
     }

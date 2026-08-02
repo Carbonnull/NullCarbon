@@ -1,6 +1,6 @@
-import { Injectable, Inject, Optional } from '@nestjs/common';
-import { Pool } from 'pg';
+import { Injectable } from '@nestjs/common';
 import { NullifierService } from '../nullifier/nullifier.service';
+import { CertificateService } from '../certificate/certificate.service';
 
 export interface ComplianceClaim {
   nullifiers: string[];
@@ -40,7 +40,7 @@ function computeNullifierSetRoot(nullifiers: string[]): string {
 export class ComplianceService {
   constructor(
     private readonly nullifierService: NullifierService,
-    @Optional() @Inject('PG_POOL') private readonly db?: Pool,
+    private readonly certificateService: CertificateService,
   ) {}
 
   async generateComplianceClaim(
@@ -66,26 +66,16 @@ export class ComplianceService {
   }
 
   async getComplianceStatus(companyId: string): Promise<ComplianceStatus> {
-    if (this.db) {
-      const result = await this.db.query<{
-        certificate_id: string;
-        issued_at: Date;
-        corridor_id: string;
-      }>(
-        `SELECT certificate_id, issued_at, corridor_id
-         FROM retirement_certificates
-         WHERE corridor_id LIKE 'compliance%'
-         ORDER BY issued_at DESC LIMIT 1`,
-      );
-      if (result.rowCount && result.rowCount > 0) {
-        const row = result.rows[0];
-        return {
-          compliant: true,
-          periodId: companyId,
-          verifiedAt: row.issued_at.toISOString(),
-          certificateId: row.certificate_id,
-        };
-      }
+    const claims = await this.certificateService.findComplianceClaims();
+    if (claims.length > 0) {
+      const latest = claims[0];
+      const periodId = (latest.corridorId ?? '').slice('compliance:'.length);
+      return {
+        compliant: true,
+        periodId: periodId || companyId,
+        verifiedAt: latest.timestamp,
+        certificateId: latest.certificateId,
+      };
     }
     return { compliant: false };
   }

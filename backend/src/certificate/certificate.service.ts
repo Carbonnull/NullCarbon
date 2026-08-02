@@ -90,13 +90,28 @@ export class CertificateService {
     return this.certificates.slice(offset, offset + limit);
   }
 
+  async findComplianceClaims(): Promise<Certificate[]> {
+    if (this.db) {
+      const result = await this.db.query<DbCert>(
+        `SELECT * FROM retirement_certificates
+         WHERE corridor_id LIKE 'compliance:%'
+         ORDER BY issued_at DESC`,
+      );
+      return result.rows.map(this.mapRow);
+    }
+    return this.certificates.filter((c) =>
+      c.corridorId?.startsWith('compliance:'),
+    );
+  }
+
   async addCertificate(
     cert: Omit<Certificate, 'certificateId'>,
+    idPrefix = 'CERT',
   ): Promise<Certificate> {
     this.sequence++;
     const now = new Date();
     const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-    const certId = `CERT-${dateStr}-${String(this.sequence).padStart(5, '0')}`;
+    const certId = `${idPrefix}-${dateStr}-${String(this.sequence).padStart(5, '0')}`;
 
     const certificate: Certificate = { ...cert, certificateId: certId };
     this.certificates.unshift(certificate);
