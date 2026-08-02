@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query } from '@nestjs/common';
 import { RegistryService } from './registry.service';
 
 @Controller('registry')
@@ -24,8 +24,12 @@ export class RegistryController {
   }
 
   @Post('sync')
-  async sync() {
-    const credits = await this.registryService.syncRegistry();
-    return { credits, synced: true };
+  async sync(@Body() body?: { registry?: string }) {
+    const allCredits = await this.registryService.syncRegistry();
+    const registry = body?.registry?.trim() || undefined;
+    const credits = registry
+      ? allCredits.filter((c) => c.registry === registry)
+      : allCredits;
+    return { credits, registry: registry ?? 'all', synced: true };
   }
 }
