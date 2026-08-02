@@ -151,3 +151,29 @@ jobs:
       - name: Build
         run: npx ng build --configuration production
         working-directory: frontend
+
+  indexer:
+    name: Indexer (TypeScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: indexer/node_modules
+          key: indexer-npm-${{ hashFiles('indexer/package-lock.json', 'indexer/package.json') }}
+          restore-keys: indexer-npm-
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: indexer
+
+      - name: Build
+        run: npm run build
+        working-directory: indexer
