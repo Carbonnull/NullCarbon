@@ -12,6 +12,7 @@ NC='\033[0m'
 
 log()   { echo -e "${GREEN}[✓]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; }
+warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 
 API_BASE="${API_BASE_URL:-http://localhost:3000}"
 
