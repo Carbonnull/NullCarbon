@@ -893,9 +893,29 @@ Returns available verified credits from all connected registries.
       "permanenceRating": 87,
       "creditHash": "0x..."
     }
+  ]
+}
+```
+
+#### `POST /registry/sync`
+Refreshes the credit catalog from all connected registries. Pass an optional `{"registry": "Verra"}` body to restrict the sync to a single registry.
+
+**Response:**
+```json
+{
+  "credits": [
+    {
+      "creditId": "VCS-123456",
+      "registry": "Verra",
+      "vintage": 2022,
+      "methodology": "REDD+",
+      "volumeAvailable": 5000,
+      "permanenceRating": 87,
+      "creditHash": "0x..."
+    }
   ],
-  "merkleRoot": "0x...",
-  "lastUpdated": "2026-06-01T12:00:00Z"
+  "registry": "all",
+  "synced": true
 }
 ```
 
@@ -927,7 +947,7 @@ Relays a retirement proof to the Soroban verifier contract.
     "nullifier": "0x...",
     "registryMerkleRoot": "0x...",
     "volumeCommitment": "0x...",
-    "corridorId": "EU-CORSIA",
+    "corridorId": "0x0101...01",
     "minVintageYear": 2020,
     "minPermanence": 70
   }
@@ -965,9 +985,12 @@ Submits a net-zero compliance proof for a reporting period.
 {
   "compliant": true,
   "txHash": "...",
-  "complianceCertificateId": "COMP-2025-FY-00017"
+  "complianceCertificateId": "COMP-20260601-00017"
 }
 ```
+
+#### `GET /proof/nullifier/:nullifier`
+Checks whether a nullifier has already been used (retired). Returns `{ "nullifier": "0x...", "used": true }`.
 
 ---
 
@@ -983,7 +1006,7 @@ Returns a publicly auditable retirement certificate.
   "nullifier": "0x...",
   "registryRoot": "0x...",
   "volumeCommitment": "0x...",
-  "corridorId": "EU-CORSIA",
+  "corridorId": "0x0101...01",
   "timestamp": "2026-06-01T14:23:11Z",
   "stellarTxHash": "...",
   "ledger": 123456,
@@ -1006,6 +1029,26 @@ Returns a company's compliance status for the current period (public, non-identi
 
 #### `POST /compliance/generate-claim`
 Generates a shareable net-zero compliance claim backed by ZK proof.
+
+---
+
+### System Endpoints
+
+#### `GET /health`
+Liveness and database connectivity probe.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "uptimeSeconds": 42,
+  "database": "up",
+  "timestamp": "2026-06-01T12:00:00Z"
+}
+```
+
+`database` is `unconfigured` when no `DATABASE_URL` is set, `down` when the
+pool cannot be reached (status becomes `degraded`), and `up` otherwise.
 
 ---
 
