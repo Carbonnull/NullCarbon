@@ -3,17 +3,22 @@ import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 import { RegistryService, Credit } from '../registry/registry.service';
 
-// poseidon-lite exports a poseidon hash function over BN254 field
-// fallback to simple XOR hash if unavailable (testnet/dev only)
-let poseidonHash: (inputs: bigint[]) => bigint;
+// poseidon-lite exports poseidonN hashes over the BN254 field, one per input
+// count. Merkle pair-hashing uses 2 inputs; credit leaves use 4.
+// Fallback to a simple XOR hash if unavailable (testnet/dev only).
+let poseidonHash2: (inputs: bigint[]) => bigint;
+let poseidonHash4: (inputs: bigint[]) => bigint;
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { poseidon2 } = require('poseidon-lite');
-  poseidonHash = poseidon2;
+  const { poseidon2, poseidon4 } = require('poseidon-lite');
+  poseidonHash2 = poseidon2;
+  poseidonHash4 = poseidon4;
 } catch {
   // Fallback: simple deterministic hash for development
-  poseidonHash = (inputs: bigint[]) =>
+  const fallback = (inputs: bigint[]) =>
     inputs.reduce((acc, v) => (acc ^ v) + 0x123456789abcdefn, 0n);
+  poseidonHash2 = fallback;
+  poseidonHash4 = fallback;
 }
 
 export interface MerkleTree {
@@ -33,6 +38,16 @@ export interface MerkleProof {
 const TREE_DEPTH = 20;
 const ZERO_VALUE = '0x0000000000000000000000000000000000000000000000000000000000000000';
 
+// Root of a fully-empty subtree of each height. ZERO_HASHES[h] is the hash
+// of 2^h zero leaves, so the sibling of a node covering 2^h leaves that lies
+// outside the built tree is ZERO_HASHES[h]. Precomputed so proofs and the
+// full-depth root can be derived without materializing the whole 2^TREE_DEPTH
+// tree.
+const ZERO_HASHES: string[] = [ZERO_VALUE];
+for (let i = 1; i <= TREE_DEPTH; i++) {
+  ZERO_HASHES.push(poseidon2Hash(ZERO_HASHES[i - 1], ZERO_HASHES[i - 1]));
+}
+
 function toHex(n: bigint): string {
   return '0x' + n.toString(16).padStart(64, '0');
 }
@@ -42,7 +57,7 @@ function fromHex(h: string): bigint {
 }
 
 function poseidon2Hash(left: string, right: string): string {
-  return toHex(poseidonHash([fromHex(left), fromHex(right)]));
+  return toHex(poseidonHash2([fromHex(left), fromHex(right)]));
 }
 
 function computeLeafHash(credit: Credit): string {
@@ -53,7 +68,7 @@ function computeLeafHash(credit: Credit): string {
         .padStart(62, '0'),
   );
   return toHex(
-    poseidonHash([
+    poseidonHash4([
       creditIdField,
       BigInt(credit.vintage),
       BigInt(credit.volume),
@@ -63,10 +78,15 @@ function computeLeafHash(credit: Credit): string {
 }
 
 function buildMerkleTree(leaves: string[]): MerkleTree {
-  // Pad leaves to next power of 2 up to 2^TREE_DEPTH
-  const size = Math.pow(2, TREE_DEPTH);
+  // Only build the smallest power-of-two tree that fits the leaves instead
+  // of the full 2^TREE_DEPTH tree: a 2^20 build is ~2M hashes per registry.
+  const leafCount = Math.max(1, leaves.length);
+  const paddedSize = Math.min(
+    Math.pow(2, Math.ceil(Math.log2(leafCount))),
+    Math.pow(2, TREE_DEPTH),
+  );
   const paddedLeaves = [...leaves];
-  while (paddedLeaves.length < size) {
+  while (paddedLeaves.length < paddedSize) {
     paddedLeaves.push(ZERO_VALUE);
   }
 
@@ -82,8 +102,18 @@ function buildMerkleTree(leaves: string[]): MerkleTree {
     current = next;
   }
 
+  // Fold the built root up through the empty remainder of the tree so the
+  // returned root matches what a full-depth tree would produce. At each
+  // step the current node is the leftmost node of its level, so its
+  // sibling is a fully-empty subtree of that level (ZERO_HASHES[level]).
+  const builtLevels = nodes.length - 1;
+  let fullRoot = current[0];
+  for (let level = builtLevels; level < TREE_DEPTH; level++) {
+    fullRoot = poseidon2Hash(fullRoot, ZERO_HASHES[level]);
+  }
+
   return {
-    root: current[0],
+    root: fullRoot,
     leaves: paddedLeaves,
     nodes,
     depth: TREE_DEPTH,
@@ -97,7 +127,14 @@ function getMerkleProof(tree: MerkleTree, leafIndex: number): MerkleProof {
   let idx = leafIndex;
   for (let level = 0; level < TREE_DEPTH; level++) {
     const sibling = idx % 2 === 0 ? idx + 1 : idx - 1;
-    path.push(tree.nodes[level][sibling] ?? ZERO_VALUE);
+    const levelNodes = tree.nodes[level];
+    // Nodes beyond the built tree are entirely empty; a sibling at this
+    // level covers 2^level zero leaves, whose root is ZERO_HASHES[level].
+    const siblingNode =
+      levelNodes && sibling < levelNodes.length
+        ? levelNodes[sibling]
+        : ZERO_HASHES[level];
+    path.push(siblingNode);
     indices.push(idx % 2); // 0 = left, 1 = right
     idx = Math.floor(idx / 2);
   }
