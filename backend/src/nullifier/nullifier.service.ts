@@ -1,20 +1,19 @@
 import { Injectable, Inject, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
+import { StellarRpcService } from '../stellar/stellar.rpc.service';
 
 @Injectable()
 export class NullifierService {
   // In-memory fallback when DB is unavailable
   private usedNullifiers = new Set<string>();
-  private readonly rpcUrl: string;
   private readonly nullifierRegistryId: string;
 
   constructor(
     private readonly config: ConfigService,
+    private readonly stellar: StellarRpcService,
     @Optional() @Inject('PG_POOL') private readonly db?: Pool,
   ) {
-    this.rpcUrl =
-      config.get('STELLAR_RPC_URL') || 'https://soroban-testnet.stellar.org';
     this.nullifierRegistryId = config.get('NULLIFIER_REGISTRY_ID') || '';
   }
 
@@ -73,22 +72,20 @@ export class NullifierService {
     return this.usedNullifiers.size;
   }
 
+  /**
+   * Check the NullifierRegistry contract (the on-chain source of truth) for
+   * whether a nullifier has been recorded via NullifierRegistry::is_used.
+   */
   private async checkOnChain(nullifier: string): Promise<boolean> {
     try {
-      const response = await fetch(this.rpcUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'simulateTransaction',
-          params: {},
-        }),
-      });
-      // Simplified: if RPC is unreachable, return false
-      if (!response.ok) return false;
-      return false; // Full cross-contract simulation not needed for fast path
-    } catch {
+      const used = await this.stellar.readContract(
+        this.nullifierRegistryId,
+        'is_used',
+        [StellarRpcService.bytes32Arg(nullifier)],
+      );
+      return used === true;
+    } catch (err) {
+      console.warn(`On-chain nullifier check failed for ${nullifier.slice(0, 16)}...:`, err);
       return false;
     }
   }

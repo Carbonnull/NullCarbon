@@ -9,12 +9,14 @@ import { CertificateModule } from './certificate/certificate.module';
 import { NullifierModule } from './nullifier/nullifier.module';
 import { ComplianceModule } from './compliance/compliance.module';
 import { CryptoModule } from './crypto/crypto.module';
+import { StellarModule } from './stellar/stellar.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     DatabaseModule,
     CryptoModule,
+    StellarModule,
     HealthModule,
     RegistryModule,
     MerkleModule,

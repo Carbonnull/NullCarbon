@@ -1,6 +1,7 @@
 import { Injectable, Inject, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
+import { StellarRpcService } from '../stellar/stellar.rpc.service';
 
 export interface Certificate {
   certificateId: string;
@@ -20,15 +21,13 @@ export class CertificateService {
   private certificates: Certificate[] = [];
   private sequence = 0;
 
-  private readonly rpcUrl: string;
   private readonly retirementVerifierId: string;
 
   constructor(
     private readonly config: ConfigService,
+    private readonly stellar: StellarRpcService,
     @Optional() @Inject('PG_POOL') private readonly db?: Pool,
   ) {
-    this.rpcUrl =
-      config.get('STELLAR_RPC_URL') || 'https://soroban-testnet.stellar.org';
     this.retirementVerifierId = config.get('RETIREMENT_VERIFIER_ID') || '';
   }
 
@@ -56,25 +55,23 @@ export class CertificateService {
     return this.certificates.find((c) => c.nullifier === nullifier) ?? null;
   }
 
+  /**
+   * Verify a retirement is recorded on-chain by reading
+   * RetirementVerifier::get_retirement(nullifier). The contract persists a
+   * record only after proof verification and nullifier registration, so a
+   * present record is the source-of-truth confirmation.
+   */
   async verifyOnChain(nullifier: string): Promise<boolean> {
     if (!this.retirementVerifierId) return false;
-    // Check if the certificate exists on-chain by querying the contract
     try {
-      const response = await fetch(this.rpcUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'simulateTransaction',
-          params: {},
-        }),
-      });
-      if (!response.ok) return false;
-      // Simplified: in production, call RetirementVerifier::get_retirement(nullifier)
-      // and check the result is non-null.
-      return false;
-    } catch {
+      const record = await this.stellar.readContract(
+        this.retirementVerifierId,
+        'get_retirement',
+        [StellarRpcService.bytes32Arg(nullifier)],
+      );
+      return record != null;
+    } catch (err) {
+      console.warn(`On-chain verification failed for ${nullifier.slice(0, 16)}...:`, err);
       return false;
     }
   }
