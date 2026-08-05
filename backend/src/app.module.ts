@@ -8,11 +8,13 @@ import { ProofModule } from './proof/proof.module';
 import { CertificateModule } from './certificate/certificate.module';
 import { NullifierModule } from './nullifier/nullifier.module';
 import { ComplianceModule } from './compliance/compliance.module';
+import { CryptoModule } from './crypto/crypto.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     DatabaseModule,
+    CryptoModule,
     HealthModule,
     RegistryModule,
     MerkleModule,
