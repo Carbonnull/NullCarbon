@@ -22,7 +22,7 @@ describe('MerkleService', () => {
   });
 
   it('produces a self-verifying proof for every credit', async () => {
-    const credits = await registry.getCredits();
+    const { credits } = await registry.getCredits();
     expect(credits.length).toBeGreaterThan(0);
 
     for (const credit of credits) {
@@ -42,7 +42,8 @@ describe('MerkleService', () => {
   });
 
   it('rejects a proof with a tampered leaf', async () => {
-    const [credit] = await registry.getCredits();
+    const { credits } = await registry.getCredits();
+    const [credit] = credits;
     const proof = await service.getMerkleProof(credit.creditHash);
     expect(proof).not.toBeNull();
 
@@ -60,7 +61,8 @@ describe('MerkleService', () => {
   });
 
   it('rejects a proof against the wrong root', async () => {
-    const [credit] = await registry.getCredits();
+    const { credits } = await registry.getCredits();
+    const [credit] = credits;
     const proof = await service.getMerkleProof(credit.creditHash);
     expect(proof).not.toBeNull();
 

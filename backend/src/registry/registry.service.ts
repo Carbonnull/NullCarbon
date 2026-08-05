@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject, Optional } from '@nestjs/common';
+import { Pool } from 'pg';
 import { CryptoService } from '../crypto/crypto.service';
 
 export interface Credit {
@@ -14,6 +15,21 @@ export interface Credit {
   isRetired: boolean;
 }
 
+export interface CreditFilters {
+  registry?: string;
+  vintageMin?: number;
+  vintageMax?: number;
+  methodology?: string;
+  volumeMin?: number;
+}
+
+export interface CreditPage {
+  credits: Credit[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 const METHODOLOGIES: Record<number, string> = {
   1: 'REDD+',
   2: 'IFM',
@@ -27,11 +43,13 @@ const METHODOLOGIES: Record<number, string> = {
 export class RegistryService {
   private mockCredits: Credit[] = [];
 
-  constructor(private readonly crypto: CryptoService) {
+  constructor(
+    private readonly crypto: CryptoService,
+    @Optional() @Inject('PG_POOL') private readonly db?: Pool,
+  ) {
     this.mockCredits = this.buildMockCredits();
   }
 
-  /** Deterministic Poseidon credit leaf hash (mirrors the Noir circuit). */
   private buildMockCredits(): Credit[] {
     const verra: Credit[] = Array.from({ length: 10 }, (_, i) => {
       const creditId = `VCS-${String(i + 1).padStart(3, '0')}`;
@@ -71,17 +89,79 @@ export class RegistryService {
     }));
   }
 
+  /**
+   * Sync the registry source of truth into PostgreSQL when a pool is
+   * available, then return all credits. The mock dataset stands in for the
+   * external carbon registries (Verra / GoldStandard).
+   */
   async syncRegistry(): Promise<Credit[]> {
+    if (this.db) {
+      for (const credit of this.mockCredits) {
+        await this.db.query(
+          `INSERT INTO credits
+             (credit_id, registry, registry_id, credit_hash, vintage_year,
+              methodology_code, methodology_name, permanence_rating, tonne_volume, is_retired)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           ON CONFLICT (credit_id) DO UPDATE SET
+             credit_hash = EXCLUDED.credit_hash,
+             is_retired = credits.is_retired OR EXCLUDED.is_retired`,
+          [
+            credit.creditId,
+            credit.registry,
+            credit.registryId,
+            credit.creditHash,
+            credit.vintage,
+            credit.methodologyCode,
+            credit.methodology,
+            credit.permanenceRating,
+            credit.volume,
+            credit.isRetired,
+          ],
+        );
+      }
+      return this.mapRows(
+        (await this.db.query('SELECT * FROM credits ORDER BY credit_id')).rows,
+      );
+    }
     return this.mockCredits;
   }
 
-  async getCredits(filters?: {
-    registry?: string;
-    vintageMin?: number;
-    vintageMax?: number;
-    methodology?: string;
-    volumeMin?: number;
-  }): Promise<Credit[]> {
+  async getCredits(
+    filters?: CreditFilters,
+    pagination?: { limit?: number; offset?: number },
+  ): Promise<CreditPage> {
+    const limit = Math.min(Math.max(pagination?.limit ?? 50, 1), 100);
+    const offset = Math.max(pagination?.offset ?? 0, 0);
+
+    if (this.db) {
+      const where: string[] = [];
+      const params: unknown[] = [];
+      const and = (clause: string, value: unknown) => {
+        if (value !== undefined) {
+          params.push(value);
+          where.push(`${clause} $${params.length}`);
+        }
+      };
+      and('registry =', filters?.registry);
+      and('vintage_year >=', filters?.vintageMin);
+      and('vintage_year <=', filters?.vintageMax);
+      and('methodology_name =', filters?.methodology);
+      and('tonne_volume >=', filters?.volumeMin);
+
+      const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+      const result = await this.db.query(
+        `SELECT *, COUNT(*) OVER() AS total FROM credits ${whereSql}
+         ORDER BY credit_id LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset],
+      );
+      return {
+        credits: this.mapRows(result.rows),
+        total: parseInt(result.rows[0]?.total ?? '0', 10),
+        limit,
+        offset,
+      };
+    }
+
     let credits = [...this.mockCredits];
     if (filters?.registry) {
       credits = credits.filter((c) => c.registry === filters.registry);
@@ -98,14 +178,33 @@ export class RegistryService {
     if (filters?.volumeMin) {
       credits = credits.filter((c) => c.volume >= filters.volumeMin!);
     }
-    return credits;
+    return {
+      credits: credits.slice(offset, offset + limit),
+      total: credits.length,
+      limit,
+      offset,
+    };
   }
 
   async getCreditById(creditId: string): Promise<Credit | null> {
+    if (this.db) {
+      const result = await this.db.query<DbCredit>(
+        'SELECT * FROM credits WHERE credit_id = $1',
+        [creditId],
+      );
+      return result.rows[0] ? this.mapRows([result.rows[0]])[0] : null;
+    }
     return this.mockCredits.find((c) => c.creditId === creditId) || null;
   }
 
   async getCreditByHash(hash: string): Promise<Credit | null> {
+    if (this.db) {
+      const result = await this.db.query<DbCredit>(
+        'SELECT * FROM credits WHERE credit_hash = $1',
+        [hash],
+      );
+      return result.rows[0] ? this.mapRows([result.rows[0]])[0] : null;
+    }
     return this.mockCredits.find((c) => c.creditHash === hash) || null;
   }
 
@@ -114,5 +213,39 @@ export class RegistryService {
     if (credit) {
       credit.isRetired = true;
     }
+    if (this.db) {
+      await this.db.query(
+        'UPDATE credits SET is_retired = true WHERE credit_id = $1',
+        [creditId],
+      );
+    }
   }
+
+  private mapRows(rows: DbCredit[]): Credit[] {
+    return rows.map((row) => ({
+      creditId: row.credit_id,
+      registry: row.registry,
+      registryId: row.registry_id,
+      vintage: row.vintage_year,
+      methodology: row.methodology_name ?? '',
+      methodologyCode: row.methodology_code,
+      volume: Number(row.tonne_volume),
+      permanenceRating: row.permanence_rating,
+      creditHash: row.credit_hash,
+      isRetired: row.is_retired,
+    }));
+  }
+}
+
+interface DbCredit {
+  credit_id: string;
+  registry: string;
+  registry_id: number;
+  credit_hash: string;
+  vintage_year: number;
+  methodology_code: number;
+  methodology_name?: string;
+  permanence_rating: number;
+  tonne_volume: string | number;
+  is_retired: boolean;
 }
