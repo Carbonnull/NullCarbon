@@ -2,7 +2,7 @@
 name = "retirement_proof"
 type = "bin"
 authors = ["Nnamdi"]
-compiler_version = ">=0.36"
+compiler_version = ">=1.0.0"
 
 [dependencies]
 utils = { path = "../utils" }

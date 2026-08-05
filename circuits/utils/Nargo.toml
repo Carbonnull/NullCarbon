@@ -2,6 +2,10 @@
 name = "utils"
 type = "lib"
 authors = ["Nnamdi"]
-compiler_version = ">=0.36"
+compiler_version = ">=1.0.0"
 
 [dependencies]
+# Poseidon was moved out of the Noir stdlib in Noir 1.0. This is the same
+# Circom-compatible implementation that `std::hash::poseidon::bn254::hash_N`
+# provided in 0.x; the external crate works on >=0.34.0 and 1.0.
+poseidon = { tag = "v0.3.0", git = "https://github.com/noir-lang/poseidon" }

@@ -435,7 +435,7 @@ fn main(
 ```
 
 > **Hash construction:** NullCarbon uses the **Circom-compatible x5 Poseidon** permutation
-> over BN254 (`std::hash::poseidon::bn254::hash_N`), not Poseidon2. The same
+> over BN254 (`poseidon::poseidon::bn254::hash_N`), not Poseidon2. The same
 > construction is reproduced exactly in the backend (`CryptoService`) and the
 > Angular frontend (`CryptoService`), and its known-answer vectors are pinned in
 > unit tests on every layer. Cross-layer vectors: `hash_1(7)`, `hash_2(42,3000)`,
@@ -720,10 +720,10 @@ rustup target add wasm32-unknown-unknown
 # Stellar CLI
 cargo install --locked stellar-cli --features opt
 
-# Noir toolchain
+# Noir toolchain (1.0.x — latest stable via noirup)
 curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
 noirup
-nargo --version   # nargo 0.36.x or later
+nargo --version
 
 # Barretenberg CLI
 curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/master/barretenberg/bbup/install | bash
@@ -1266,7 +1266,7 @@ NullCarbon makes deep use of the cryptographic host functions introduced in Stel
 
 ### Why Circom-Compatible Poseidon for Carbon?
 
-NullCarbon hashes millions of credit records into Merkle trees for inclusion proofs. It uses the **x5 Poseidon** permutation over BN254 (`std::hash::poseidon::bn254::hash_N`) — the same construction as Circom's `poseidon` — which is dramatically more efficient inside ZK circuits than SHA-256 or Keccak. Because the construction is reproduced exactly in the backend and frontend `CryptoService` helpers (constants generated from the same configuration), any component can compute identical nullifiers, commitments, and Merkle roots, and the known-answer vectors are pinned in tests at every layer.
+NullCarbon hashes millions of credit records into Merkle trees for inclusion proofs. It uses the **x5 Poseidon** permutation over BN254 (`poseidon::poseidon::bn254::hash_N`, the crate that shipped as `std::hash::poseidon::bn254::hash_N` before Noir 1.0 moved Poseidon out of the stdlib) — the same construction as Circom's `poseidon` — which is dramatically more efficient inside ZK circuits than SHA-256 or Keccak. Because the construction is reproduced exactly in the backend and frontend `CryptoService` helpers (constants generated from the same configuration), any component can compute identical nullifiers, commitments, and Merkle roots, and the known-answer vectors are pinned in tests at every layer.
 
 ### Compute Budget Comparison
 
