@@ -80,7 +80,7 @@ export class ComplianceService {
     const nullifierSetRoot = this.computeNullifierSetRoot(verified);
     const complianceNullifier = this.crypto.computeComplianceNullifier(
       this.crypto.toField(companySecret),
-      this.crypto.toField(periodId),
+      this.crypto.fieldFromLabel(periodId),
     );
 
     return {

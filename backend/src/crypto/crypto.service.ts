@@ -106,6 +106,14 @@ export class CryptoService {
   }
 
   /**
+   * Deterministically encode an arbitrary ASCII label (e.g. a compliance
+   * period id like "2025-Q1") as a BN254 field element, big-endian.
+   */
+  fieldFromLabel(label: string): bigint {
+    return creditIdToField(label);
+  }
+
+  /**
    * Parse a field element from a string. Accepts `0x`-prefixed hex, plain
    * decimal, or plain hex (all-hex characters without a prefix).
    */
