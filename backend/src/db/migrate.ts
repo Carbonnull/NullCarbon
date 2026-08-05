@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { Client } from 'pg';
 
@@ -12,12 +12,16 @@ async function migrate() {
   await client.connect();
   console.log('Connected to PostgreSQL');
 
-  const sql = readFileSync(
-    join(__dirname, 'migrations/001_initial_schema.sql'),
-    'utf-8',
-  );
+  const migrationsDir = join(__dirname, 'migrations');
+  const files = readdirSync(migrationsDir).sort();
 
-  await client.query(sql);
+  for (const file of files) {
+    if (!file.endsWith('.sql')) continue;
+    const sql = readFileSync(join(migrationsDir, file), 'utf-8');
+    await client.query(sql);
+    console.log(`Applied ${file}`);
+  }
+
   console.log('Migration complete');
   await client.end();
 }

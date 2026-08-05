@@ -52,6 +52,24 @@ CREATE TABLE IF NOT EXISTS retirement_certificates (
   issued_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Indexer cursor: last fully-processed ledger per event stream
+CREATE TABLE IF NOT EXISTS indexer_state (
+  namespace VARCHAR(64) PRIMARY KEY,
+  last_ledger BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexer dedupe: processed event ids per stream (idempotency)
+CREATE TABLE IF NOT EXISTS indexer_events (
+  event_id VARCHAR(255) PRIMARY KEY,
+  namespace VARCHAR(64) NOT NULL,
+  processed_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- A nullifier can only ever be retired once
+CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_nullifier_unique
+  ON retirement_certificates(nullifier);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_nullifiers_nullifier ON nullifiers(nullifier);
 CREATE INDEX IF NOT EXISTS idx_certificates_certificate_id ON retirement_certificates(certificate_id);
