@@ -1,14 +1,15 @@
 import { ConfigService } from '@nestjs/config';
 import { MerkleService } from './merkle.service';
 import { RegistryService } from '../registry/registry.service';
+import { CryptoService } from '../crypto/crypto.service';
 
 describe('MerkleService', () => {
   let service: MerkleService;
   let registry: RegistryService;
 
   beforeEach(async () => {
-    registry = new RegistryService();
-    service = new MerkleService(new ConfigService(), registry);
+    registry = new RegistryService(new CryptoService());
+    service = new MerkleService(new ConfigService(), registry, new CryptoService());
     await service.rebuildTrees();
   });
 

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { CryptoService } from '../crypto/crypto.service';
 
 export interface Credit {
   creditId: string;
@@ -22,51 +23,53 @@ const METHODOLOGIES: Record<number, string> = {
   6: 'ICS',
 };
 
-/** FNV-1a based deterministic 64-hex hash of the credit id. */
-function deterministicCreditHash(creditId: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < creditId.length; i++) {
-    h ^= creditId.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  const base = h.toString(16).padStart(8, '0');
-  return `0x${base.repeat(8)}`;
-}
-
 @Injectable()
 export class RegistryService {
-  private readonly mockCredits: Credit[] = [
-    ...Array.from({ length: 10 }, (_, i) => {
+  private mockCredits: Credit[] = [];
+
+  constructor(private readonly crypto: CryptoService) {
+    this.mockCredits = this.buildMockCredits();
+  }
+
+  /** Deterministic Poseidon credit leaf hash (mirrors the Noir circuit). */
+  private buildMockCredits(): Credit[] {
+    const verra: Credit[] = Array.from({ length: 10 }, (_, i) => {
       const creditId = `VCS-${String(i + 1).padStart(3, '0')}`;
       return {
         creditId,
-        registry: 'Verra' as const,
+        registry: 'Verra',
         registryId: 1,
         vintage: 2020 + (i % 5),
         methodology: METHODOLOGIES[(i % 4) + 1],
         methodologyCode: (i % 4) + 1,
         volume: (i + 1) * 1000,
         permanenceRating: 70 + (i % 30),
-        creditHash: deterministicCreditHash(creditId),
+        creditHash: '',
         isRetired: false,
       };
-    }),
-    ...Array.from({ length: 5 }, (_, i) => {
+    });
+
+    const goldStandard: Credit[] = Array.from({ length: 5 }, (_, i) => {
       const creditId = `GS-${String(i + 1).padStart(3, '0')}`;
       return {
         creditId,
-        registry: 'GoldStandard' as const,
+        registry: 'GoldStandard',
         registryId: 2,
         vintage: 2021 + (i % 4),
         methodology: METHODOLOGIES[(i % 2) + 5],
         methodologyCode: (i % 2) + 5,
         volume: (i + 3) * 500,
         permanenceRating: 80 + (i % 15),
-        creditHash: deterministicCreditHash(creditId),
+        creditHash: '',
         isRetired: false,
       };
-    }),
-  ];
+    });
+
+    return [...verra, ...goldStandard].map((credit) => ({
+      ...credit,
+      creditHash: this.crypto.computeCreditLeafHash(credit),
+    }));
+  }
 
   async syncRegistry(): Promise<Credit[]> {
     return this.mockCredits;
@@ -96,6 +99,10 @@ export class RegistryService {
       credits = credits.filter((c) => c.volume >= filters.volumeMin!);
     }
     return credits;
+  }
+
+  async getCreditById(creditId: string): Promise<Credit | null> {
+    return this.mockCredits.find((c) => c.creditId === creditId) || null;
   }
 
   async getCreditByHash(hash: string): Promise<Credit | null> {

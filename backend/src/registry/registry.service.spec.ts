@@ -1,10 +1,11 @@
 import { RegistryService } from './registry.service';
+import { CryptoService } from '../crypto/crypto.service';
 
 describe('RegistryService', () => {
   let service: RegistryService;
 
   beforeEach(() => {
-    service = new RegistryService();
+    service = new RegistryService(new CryptoService());
   });
 
   it('returns all mock credits', async () => {
@@ -40,8 +41,8 @@ describe('RegistryService', () => {
   });
 
   it('returns deterministic credit hashes across instances', async () => {
-    const first = await new RegistryService().getCredits();
-    const second = await new RegistryService().getCredits();
+    const first = await new RegistryService(new CryptoService()).getCredits();
+    const second = await new RegistryService(new CryptoService()).getCredits();
     first.forEach((c, i) => expect(c.creditHash).toBe(second[i].creditHash));
   });
 

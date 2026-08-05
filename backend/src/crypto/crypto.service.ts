@@ -105,7 +105,13 @@ export class CryptoService {
     return POSEIDON_FIELD;
   }
 
-  toField(hex: string): bigint {
-    return fromHex(hex);
+  /**
+   * Parse a field element from a string. Accepts `0x`-prefixed hex, plain
+   * decimal, or plain hex (all-hex characters without a prefix).
+   */
+  toField(input: string): bigint {
+    if (input.startsWith('0x')) return BigInt(input);
+    if (/^[0-9]+$/.test(input)) return BigInt(input);
+    return BigInt('0x' + input);
   }
 }
