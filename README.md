@@ -156,7 +156,7 @@ Every carbon credit retirement in NullCarbon produces a **nullifier** — a uniq
 ## Key Features
 
 ### 🔒 Nullifier-Backed Retirement
-Every retirement generates a Poseidon2 nullifier anchored on Stellar. Once recorded, the same credit cannot be retired again — on any chain, in any registry, by any party. This is the first cryptographic solution to double-counting in the voluntary carbon market.
+Every retirement generates a Poseidon nullifier anchored on Stellar. Once recorded, the same credit cannot be retired again — on any chain, in any registry, by any party. This is the first cryptographic solution to double-counting in the voluntary carbon market.
 
 ### 🕵️ Private Net-Zero Claims
 Corporations prove compliance using ZK range proofs: "we have retired ≥ N tonnes this year" without revealing which credits, from which registries, or the exact amount. Competitors learn nothing. Regulators get everything they need.
@@ -235,7 +235,7 @@ nullcarbon/
 | ZK Proof System | [Noir](https://noir-lang.org/) + Barretenberg (UltraHonk) |
 | Proof Generation | `@noir-lang/noir_js` + `@aztec/bb.js` (WASM, browser) |
 | Smart Contracts | Rust on [Soroban](https://soroban.stellar.org/) |
-| On-chain Crypto | Stellar Protocol 25/26 BN254 + Poseidon2 host functions |
+| On-chain Crypto | Stellar Protocol 25/26 BN254 + Poseidon host functions |
 | Blockchain | [Stellar](https://stellar.org/) Testnet → Mainnet |
 | Backend | [NestJS](https://nestjs.com/) (TypeScript) |
 | Frontend | [Angular](https://angular.io/) 17+ (standalone components) |
@@ -280,13 +280,18 @@ nullcarbon/
 ├── backend/
 │   ├── src/
 │   │   ├── app.module.ts
+│   │   ├── crypto/
+│   │   │   ├── crypto.module.ts
+│   │   │   ├── crypto.service.ts      # Poseidon hash_N wrapper (shared with circuits)
+│   │   │   ├── poseidon.ts            # Circom-compatible x5 Poseidon permutation
+│   │   │   └── poseidon.constants.ts  # Generated round constants / MDS matrices
 │   │   ├── registry/
 │   │   │   ├── registry.module.ts
-│   │   │   ├── registry.service.ts    # Verra/GS API bridge
+│   │   │   ├── registry.service.ts    # Verra/GS API bridge + PostgreSQL sync
 │   │   │   └── registry.controller.ts
 │   │   ├── merkle/
 │   │   │   ├── merkle.module.ts
-│   │   │   └── merkle.service.ts      # Merkle tree builder for credit sets
+│   │   │   └── merkle.service.ts      # 20-deep Poseidon Merkle trees + proofs
 │   │   ├── proof/
 │   │   │   ├── proof.module.ts
 │   │   │   └── proof.service.ts       # Proof relay to Soroban
@@ -296,9 +301,12 @@ nullcarbon/
 │   │   ├── nullifier/
 │   │   │   ├── nullifier.module.ts
 │   │   │   └── nullifier.service.ts   # Nullifier tracking & lookup
+│   │   ├── stellar/
+│   │   │   ├── stellar.module.ts
+│   │   │   └── stellar.rpc.service.ts # Soroban read client (get_retirement, is_used)
 │   │   └── compliance/
 │   │       ├── compliance.module.ts
-│   │       └── compliance.service.ts  # Net-zero claim generation
+│   │       └── compliance.service.ts  # Net-zero claim generation + set roots
 │   ├── .env.example
 │   └── package.json
 │
@@ -311,7 +319,6 @@ nullcarbon/
 │   │   │   │   ├── wallet/
 │   │   │   │   │   └── wallet-connect.component.ts
 │   │   │   │   ├── credits/
-│   │   │   │   │   ├── credit-import.component.ts
 │   │   │   │   │   └── credit-portfolio.component.ts
 │   │   │   │   ├── retirement/
 │   │   │   │   │   ├── retirement-flow.component.ts
@@ -322,25 +329,29 @@ nullcarbon/
 │   │   │   │       ├── audit-portal.component.ts
 │   │   │   │       └── certificate-verify.component.ts
 │   │   │   └── shared/
-│   │   │       ├── services/
-│   │   │       │   ├── noir.service.ts
-│   │   │       │   ├── stellar.service.ts
-│   │   │       │   ├── registry.service.ts
-│   │   │       │   └── certificate.service.ts
-│   │   │       └── components/
-│   │   │           ├── proof-status/
-│   │   │           └── retirement-card/
+│   │   │       ├── crypto/
+│   │   │       │   ├── poseidon.ts            # Same Poseidon as backend/circuits
+│   │   │       │   └── poseidon.constants.ts
+│   │   │       └── services/
+│   │   │           ├── crypto.service.ts      # hash_N / nullifiers / commitments
+│   │   │           ├── noir.service.ts
+│   │   │           ├── stellar.service.ts
+│   │   │           ├── registry.service.ts
+│   │   │           └── certificate.service.ts
 │   │   └── environments/
 │   ├── angular.json
 │   └── package.json
 │
 ├── indexer/
 │   ├── src/
-│   │   ├── index.ts                   # Soroban event listener
+│   │   ├── index.ts                   # Soroban event listener (2 pipelines)
 │   │   ├── handlers/
+│   │   │   ├── stellar.events.ts      # Topic decoding + event normalization
+│   │   │   ├── stellar.event-source.ts# Cursor-based source with exact topic filter
 │   │   │   ├── retirement.handler.ts
-│   │   │   └── certificate.handler.ts
+│   │   │   └── nullifier.handler.ts
 │   │   └── db/
+│   │       ├── database.ts            # State, dedupe + schema bootstrap
 │   │       └── schema.ts
 │   └── package.json
 │
@@ -368,61 +379,68 @@ Proves in zero knowledge:
 > *"I hold a legitimate carbon credit from a verified registry, it has never been retired before, and I am now retiring it — without revealing which credit, from which registry, or who I am."*
 
 ```noir
-// circuits/src/retirement_proof.nr
+// circuits/retirement_proof/src/main.nr
 
-use dep::std::hash::poseidon2;
-use dep::std::merkle::compute_merkle_root;
+use utils::merkle;
+use utils::poseidon;
+use utils::range;
 
 fn main(
     // ── Private Inputs (never revealed) ──────────────────────────────
     credit_id: Field,               // Registry-assigned credit identifier
     credit_secret: Field,           // Holder's secret binding key
-    credit_hash: Field,             // Poseidon2 hash of full credit metadata
-    registry_id: u32,               // Which registry issued this credit (Verra=1, GS=2, ACX=3)
+    credit_hash: Field,             // Poseidon hash of full credit metadata
     vintage_year: u32,              // Year the credit was issued
     methodology_code: u32,          // Carbon methodology (REDD+, IFM, DAC, etc.)
     permanence_rating: u32,         // Credit permanence score (0–100)
     tonne_volume: u64,              // Volume being retired in this tx
-    merkle_path: [Field; 20],       // Merkle proof path (credit exists in registry tree)
-    merkle_indices: [u1; 20],       // Left/right indicators for Merkle path
+    merkle_path: [Field; 20],       // Merkle proof path (20-deep registry tree)
+    merkle_indices: [bool; 20],     // Left/right indicators for Merkle path
 
     // ── Public Inputs (revealed on-chain) ────────────────────────────
-    pub nullifier: Field,           // Unique retirement fingerprint (prevents replay)
-    pub registry_merkle_root: Field,// Current Merkle root of verified credits
-    pub min_vintage_year: u32,      // Minimum acceptable vintage (public policy)
-    pub min_permanence: u32,        // Minimum permanence rating required
-    pub volume_commitment: Field,   // Pedersen commitment to tonne_volume
-    pub corridor_id: Field,         // Retirement corridor (buyer jurisdiction)
+    nullifier: Field,           // Unique retirement fingerprint (prevents replay)
+    registry_merkle_root: Field,// Current Merkle root of verified credits
+    min_vintage_year: u32,      // Minimum acceptable vintage (public policy)
+    min_permanence: u32,        // Minimum permanence rating required
+    volume_commitment: Field,   // Poseidon commitment to tonne_volume
+    corridor_id: Field,         // Retirement corridor (buyer jurisdiction)
 ) {
     // 1. Verify credit exists in the registry Merkle tree
-    let computed_root = compute_merkle_root(credit_hash, merkle_indices, merkle_path);
+    let computed_leaf = merkle::compute_leaf_hash(credit_id, vintage_year, tonne_volume, methodology_code);
+    assert(computed_leaf == credit_hash, "Credit leaf hash mismatch");
+
+    let computed_root = merkle::verify_merkle_inclusion(credit_hash, merkle_path, merkle_indices);
     assert(computed_root == registry_merkle_root, "Credit not found in verified registry");
 
     // 2. Verify vintage year meets minimum requirement
-    assert(vintage_year >= min_vintage_year, "Credit vintage too old");
+    range::assert_gte_u32(vintage_year, min_vintage_year, "Credit vintage too old");
 
     // 3. Verify permanence rating meets threshold
-    assert(permanence_rating >= min_permanence, "Credit permanence rating insufficient");
+    range::assert_gte_u32(permanence_rating, min_permanence, "Credit permanence rating insufficient");
 
     // 4. Compute and verify nullifier
-    //    nullifier = Poseidon2(credit_secret, credit_id, corridor_id)
+    //    nullifier = Poseidon_3(credit_secret, credit_id, corridor_id)
     //    Binding to corridor_id ensures credit can't be replayed in a different context
-    let computed_nullifier = poseidon2::hash(
-        [credit_secret, credit_id, corridor_id], 3
-    );
+    let computed_nullifier = poseidon::compute_retirement_nullifier(credit_secret, credit_id, corridor_id);
     assert(computed_nullifier == nullifier, "Invalid nullifier");
 
     // 5. Verify volume commitment is well-formed
-    //    Uses a simplified Pedersen commitment: volume_commitment = Poseidon2(tonne_volume, credit_secret)
-    let computed_commitment = poseidon2::hash(
-        [Field::from(tonne_volume), credit_secret], 2
-    );
+    //    volume_commitment = Poseidon_2(tonne_volume, credit_secret)
+    let computed_commitment = poseidon::compute_volume_commitment(tonne_volume, credit_secret);
     assert(computed_commitment == volume_commitment, "Volume commitment mismatch");
 
     // 6. Enforce non-zero retirement volume
     assert(tonne_volume > 0, "Cannot retire zero tonnes");
 }
 ```
+
+> **Hash construction:** NullCarbon uses the **Circom-compatible x5 Poseidon** permutation
+> over BN254 (`std::hash::poseidon::bn254::hash_N`), not Poseidon2. The same
+> construction is reproduced exactly in the backend (`CryptoService`) and the
+> Angular frontend (`CryptoService`), and its known-answer vectors are pinned in
+> unit tests on every layer. Cross-layer vectors: `hash_1(7)`, `hash_2(42,3000)`,
+> `hash_2(1,1)`, `hash_3(1,2,3)`, `hash_4(5,2022,3000,1)`, and the zero leaf
+> `hash_4(0,0,0,0) = 0x532fd4…9946`.
 
 ---
 
@@ -432,9 +450,11 @@ Proves in zero knowledge:
 > *"My total retired volume across all credits this compliance period meets or exceeds my declared offset commitment — without revealing the exact amount or which credits I retired."*
 
 ```noir
-// circuits/src/compliance_proof.nr
+// circuits/compliance_proof/src/main.nr
 
-use dep::std::hash::poseidon2;
+use utils::merkle;
+use utils::poseidon;
+use utils::range;
 
 fn main(
     // ── Private Inputs ────────────────────────────────────────────────
@@ -442,35 +462,51 @@ fn main(
     retirement_volumes: [u64; 50],       // Corresponding volumes (private)
     active_count: u32,                   // How many entries are active (rest are padding)
     company_secret: Field,               // Company's binding secret
+    nullifier_paths: [[Field; 20]; 50],  // Merkle inclusion proofs per nullifier
+    nullifier_indices: [[bool; 20]; 50], // Left/right indicators per proof
 
     // ── Public Inputs ─────────────────────────────────────────────────
-    pub commitment_threshold: u64,       // The declared offset commitment (public)
-    pub period_id: Field,                // Compliance period identifier
-    pub compliance_nullifier: Field,     // Prevents re-use of same retirements
-    pub nullifier_set_root: Field,       // Merkle root of all submitted nullifiers
+    commitment_threshold: u64,       // The declared offset commitment (public)
+    period_id: Field,                // Compliance period identifier
+    compliance_nullifier: Field,     // Prevents re-use of same retirements
+    nullifier_set_root: Field,       // Merkle root of all submitted nullifiers
 ) {
     // 1. Sum total retired volume
     let mut total_volume: u64 = 0;
     for i in 0..50 {
         if i < active_count {
-            total_volume += retirement_volumes[i];
+            total_volume = total_volume + retirement_volumes[i];
+        } else {
+            assert(retirement_volumes[i] == 0);
         }
     }
 
     // 2. Prove total meets or exceeds commitment threshold
-    assert(total_volume >= commitment_threshold, "Insufficient retirement volume for compliance");
+    range::assert_gte_u64(total_volume, commitment_threshold, "Insufficient retirement volume for compliance");
 
     // 3. Verify compliance nullifier (prevents submitting same retirements twice)
-    let computed_compliance_nullifier = poseidon2::hash(
-        [company_secret, period_id], 2
-    );
+    let computed_compliance_nullifier = poseidon::compute_compliance_nullifier(company_secret, period_id);
     assert(computed_compliance_nullifier == compliance_nullifier, "Invalid compliance nullifier");
 
-    // 4. Verify all submitted nullifiers are in the nullifier set
-    //    (They were previously recorded on-chain by the NullifierRegistry)
-    // ... Merkle inclusion proofs for each nullifier in nullifier_set_root
+    // 4. Verify every submitted nullifier is in the nullifier set tree
+    for i in 0..50 {
+        if i < active_count {
+            let computed_root = merkle::verify_merkle_inclusion(
+                retirement_nullifiers[i],
+                nullifier_paths[i],
+                nullifier_indices[i],
+            );
+            assert(computed_root == nullifier_set_root);
+        }
+    }
+
+    range::assert_lte_u32(active_count, 50);
 }
 ```
+
+> The nullifier-set root, compliance nullifier, and per-nullifier inclusion proofs
+> are produced by `POST /compliance/generate-claim` (backend), which builds the
+> set tree with the same Poseidon pair hashing as the registry trees.
 
 ---
 
@@ -766,19 +802,15 @@ cd circuits
 # Compile all circuits
 nargo compile
 
-# Run unit tests
+# Run unit tests (including the Poseidon known-answer vectors)
 nargo test
 
-# Generate test proofs
-nargo prove --prover-name retirement
-nargo prove --prover-name compliance
+# Type-check without emitting artifacts
+nargo check
 
-# Verify test proofs
-nargo verify
-
-# Export verification keys for Soroban contracts
-bb write_vk -b ./target/retirement_proof.json -o ./target/retirement_vk
-bb write_vk -b ./target/compliance_proof.json -o ./target/compliance_vk
+# Real proofs are generated client-side with @noir-lang/noir_js + bb.js
+# (see frontend/src/app/shared/services/noir.service.ts), then verified
+# on-chain by the RetirementVerifier contract.
 ```
 
 **Expected output:**
@@ -878,24 +910,33 @@ ng serve
 #### `GET /registry/credits`
 Returns available verified credits from all connected registries.
 
-**Query params:** `registry`, `vintage_min`, `vintage_max`, `methodology`, `volume_min`
+**Query params:** `registry`, `vintage_min`, `vintage_max`, `methodology`, `volume_min`, `limit`, `offset` (paginated)
 
 **Response:**
 ```json
 {
   "credits": [
     {
-      "creditId": "VCS-123456",
+      "creditId": "VCS-001",
       "registry": "Verra",
-      "vintage": 2022,
+      "registryId": 1,
+      "vintage": 2020,
       "methodology": "REDD+",
-      "volumeAvailable": 5000,
-      "permanenceRating": 87,
-      "creditHash": "0x..."
+      "methodologyCode": 1,
+      "volume": 1000,
+      "permanenceRating": 70,
+      "creditHash": "0x...",
+      "isRetired": false
     }
-  ]
+  ],
+  "total": 15,
+  "limit": 20,
+  "offset": 0
 }
 ```
+
+#### `GET /registry/credits/:creditId`
+Returns a single credit: `{ "credit": { ... } }`.
 
 #### `POST /registry/sync`
 Refreshes the credit catalog from all connected registries. Pass an optional `{"registry": "Verra"}` body to restrict the sync to a single registry.
@@ -903,17 +944,7 @@ Refreshes the credit catalog from all connected registries. Pass an optional `{"
 **Response:**
 ```json
 {
-  "credits": [
-    {
-      "creditId": "VCS-123456",
-      "registry": "Verra",
-      "vintage": 2022,
-      "methodology": "REDD+",
-      "volumeAvailable": 5000,
-      "permanenceRating": 87,
-      "creditHash": "0x..."
-    }
-  ],
+  "credits": [ { "creditId": "VCS-001", "creditHash": "0x...", "..." : "..." } ],
   "registry": "all",
   "synced": true
 }
@@ -1015,7 +1046,16 @@ Returns a publicly auditable retirement certificate.
 ```
 
 #### `GET /certificate/verify/:nullifier`
-Cryptographically verifies a nullifier has been recorded on-chain.
+Cryptographically verifies a nullifier has been recorded on-chain (via the `RetirementVerifier::get_retirement` / `NullifierRegistry::is_used` Soroban reads).
+
+**Response:**
+```json
+{
+  "nullifier": "0x...",
+  "onChain": true,
+  "certificate": { "certificateId": "CERT-...", "nullifier": "0x...", "verifiable": true }
+}
+```
 
 #### `GET /certificates/feed`
 Public feed of all retirement certificates (auditable by anyone).
@@ -1027,8 +1067,40 @@ Public feed of all retirement certificates (auditable by anyone).
 #### `GET /compliance/status/:companyId`
 Returns a company's compliance status for the current period (public, non-identifying).
 
+**Response:**
+```json
+{
+  "compliant": true,
+  "periodId": "2025-Q1",
+  "verifiedAt": "2026-08-05T...",
+  "certificateId": "COMP-20260805-00002"
+}
+```
+
 #### `POST /compliance/generate-claim`
-Generates a shareable net-zero compliance claim backed by ZK proof.
+Generates a shareable net-zero compliance claim backed by ZK proof. Only nullifiers already recorded on-chain are included.
+
+**Request:**
+```json
+{
+  "nullifiers": ["0x...", "0x..."],
+  "periodId": "2025-Q1",
+  "companySecret": "company-1"
+}
+```
+
+**Response:**
+```json
+{
+  "nullifiers": ["0x..."],
+  "periodId": "2025-Q1",
+  "nullifierSetRoot": "0x...",
+  "complianceNullifier": "0x...",
+  "nullifierPaths": [["0x...", "..." ]],
+  "nullifierIndices": [[0, 1, 0, "..."]]
+}
+```
+`nullifierPaths` / `nullifierIndices` are the per-nullifier inclusion proofs for the compliance circuit. Company secrets are ASCII-label encoded into a field, exactly like `periodId`.
 
 ---
 
@@ -1070,38 +1142,34 @@ Import credits from Verra/Gold Standard via API. View tokenized credits as Stell
 // Select corridor (EU-CORSIA, Article 6, Voluntary), set compliance period
 
 // Step 3: Generate ZK proof (in browser)
-// noir.service.ts
-async generateRetirementProof(
-  credits: Credit[],
-  retirementConfig: RetirementConfig
-): Promise<RetirementProof> {
-  const noir = new Noir(retirementCircuit);
-  const bb = new BarretenbergBackend(retirementCircuit);
+// noir.service.ts — public inputs are computed with the shared Poseidon
+// CryptoService so they match the circuits exactly (creditIdToField encodes
+// credit ids as BN254 field elements, corridor ids are parsed from hex).
+const secret = this.crypto.computeDeriveSecret(credit, walletAddress);
+const creditId = creditIdToField(credit.creditId);
+const corridorId = this.crypto.toField(retirementConfig.corridorId);
+const inputs = {
+  credit_id: creditId.toString(),                       // decimal field
+  credit_secret: secret.toString(),                     // decimal field
+  credit_hash: credit.creditHash,
+  vintage_year: credit.vintage,
+  methodology_code: METHODOLOGY_CODES[credit.methodology],
+  permanence_rating: credit.permanenceRating,
+  tonne_volume: retirementConfig.volume,
+  merkle_path: credit.merklePath,                       // from /registry/merkle-proof
+  merkle_indices: credit.merkleIndices.map((i) => i === 1),
+  nullifier: this.crypto.computeRetirementNullifier(secret, creditId, corridorId),
+  registry_merkle_root: credit.merkleRoot,
+  min_vintage_year: retirementConfig.minVintage,
+  min_permanence: retirementConfig.minPermanence,
+  volume_commitment: this.crypto.computeVolumeCommitment(BigInt(retirementConfig.volume), secret),
+  corridor_id: corridorId.toString(),                   // decimal field
+};
 
-  const inputs = {
-    credit_id: credits[0].creditId,
-    credit_secret: this.deriveSecret(credits[0], this.walletKey),
-    credit_hash: credits[0].creditHash,
-    vintage_year: credits[0].vintage,
-    methodology_code: METHODOLOGY_CODES[credits[0].methodology],
-    permanence_rating: credits[0].permanenceRating,
-    tonne_volume: retirementConfig.volume,
-    merkle_path: credits[0].merklePath,
-    merkle_indices: credits[0].merkleIndices,
-    // Public inputs
-    nullifier: this.computeNullifier(credits[0], retirementConfig.corridorId),
-    registry_merkle_root: credits[0].merkleRoot,
-    min_vintage_year: retirementConfig.minVintage,
-    min_permanence: retirementConfig.minPermanence,
-    volume_commitment: this.computeCommitment(retirementConfig.volume),
-    corridor_id: CORRIDOR_IDS[retirementConfig.corridor],
-  };
+const { witness } = await noir.execute(inputs);
+const { proof, publicInputs } = await bb.generateProof(witness);
 
-  const { witness } = await noir.execute(inputs);
-  const { proof, publicInputs } = await bb.generateProof(witness);
-
-  return { proof, publicInputs };
-}
+return { proof, publicInputs };
 
 // Step 4: Submit & receive certificate
 // Proof → NestJS relay → Soroban verifier → certificate minted
@@ -1196,13 +1264,9 @@ NullCarbon makes deep use of the cryptographic host functions introduced in Stel
 | `bn254_pairing_check` | The final bilinear pairing — proves the proof is valid |
 | `bn254_g1_is_on_curve` | Validates proof elements are legitimate curve points |
 
-### Why Poseidon2 for Carbon?
+### Why Circom-Compatible Poseidon for Carbon?
 
-The voluntary carbon market requires hashing millions of credit records into Merkle trees for inclusion proofs. Poseidon2 — natively accelerated in Protocol 25 — is orders of magnitude more efficient inside ZK circuits than SHA-256 or Keccak. Using Poseidon2 for credit hashes means:
-
-- Merkle proof circuits are dramatically smaller (fewer constraints)
-- Proof generation is faster in the browser
-- On-chain verification of Merkle proofs via `poseidon2_hash` host function is cheap
+NullCarbon hashes millions of credit records into Merkle trees for inclusion proofs. It uses the **x5 Poseidon** permutation over BN254 (`std::hash::poseidon::bn254::hash_N`) — the same construction as Circom's `poseidon` — which is dramatically more efficient inside ZK circuits than SHA-256 or Keccak. Because the construction is reproduced exactly in the backend and frontend `CryptoService` helpers (constants generated from the same configuration), any component can compute identical nullifiers, commitments, and Merkle roots, and the known-answer vectors are pinned in tests at every layer.
 
 ### Compute Budget Comparison
 
@@ -1211,7 +1275,7 @@ The voluntary carbon market requires hashing millions of credit records into Mer
 | BN254 pairing check | ~50M instructions (over budget) | ~2M instructions ✓ |
 | MSM over 8 points | ~30M instructions (over budget) | ~800K instructions ✓ |
 | Full UltraHonk verification | Not feasible on-chain | ~8–12M instructions ✓ |
-| Poseidon2 (20-depth Merkle) | ~5M instructions | ~400K instructions ✓ |
+| Circom-compatible Poseidon (20-depth Merkle) | ~5M instructions | ~400K instructions ✓ |
 
 Without Protocol 25/26, NullCarbon's proof verification would be impossible on Soroban. These host functions are the direct enabler of the entire system.
 
@@ -1232,7 +1296,7 @@ NullCarbon bridges the following registries via their public APIs:
 
 ```
 Verra API → credit list (credit_id, metadata) →
-  Backend hashes each: Poseidon2(credit_id, vintage, volume, methodology) →
+  Backend hashes each: Poseidon(credit_id, vintage, volume, methodology) →
   Builds Merkle tree of all active, non-retired credits →
   Publishes current root to NullCarbon backend →
   Noir circuit uses Merkle inclusion proof to prove credit legitimacy
