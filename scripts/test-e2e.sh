@@ -133,7 +133,10 @@ echo ""
 echo "================================================"
 if [ "${ALL_PASSED}" = true ]; then
   echo -e "${GREEN}  All tests passed!${NC}"
+  echo "================================================"
+  exit 0
 else
-  echo -e "${YELLOW}  Some tests failed — check output above.${NC}"
+  echo -e "${RED}  Some tests failed — check output above.${NC}"
+  echo "================================================"
+  exit 1
 fi
-echo "================================================"
