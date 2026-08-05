@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Subject, Observable } from 'rxjs';
+import { CryptoService, creditIdToField } from './crypto.service';
 
 export interface RetirementProofInputs {
   creditId: string;
@@ -38,6 +39,8 @@ export interface ComplianceProofInputs {
   retirementVolumes: number[];
   activeCount: number;
   companySecret: string;
+  nullifierPaths: string[][];
+  nullifierIndices: number[][];
   commitmentThreshold: number;
   periodId: string;
   complianceNullifier: string;
@@ -65,6 +68,8 @@ export class NoirService {
 
   private progressSubject = new Subject<ProofProgress>();
   proofProgress$: Observable<ProofProgress> = this.progressSubject.asObservable();
+
+  constructor(private crypto: CryptoService) {}
 
   isReady(): boolean {
     return this.ready;
@@ -141,7 +146,7 @@ export class NoirService {
 
         return {
           proof: '0x' + Buffer.from(proof).toString('hex'),
-          publicInputs: {},
+          publicInputs: this.compliancePublicInputs(inputs),
           generationTimeMs: Date.now() - start,
         };
       } catch {
@@ -152,8 +157,19 @@ export class NoirService {
     await this.delay(800);
     return {
       proof: '0x' + '00'.repeat(64),
-      publicInputs: {},
+      publicInputs: this.compliancePublicInputs(inputs),
       generationTimeMs: Date.now() - start,
+    };
+  }
+
+  private compliancePublicInputs(
+    inputs: ComplianceProofInputs,
+  ): Record<string, string> {
+    return {
+      complianceNullifier: inputs.complianceNullifier,
+      nullifierSetRoot: inputs.nullifierSetRoot,
+      commitmentThreshold: String(inputs.commitmentThreshold),
+      periodId: inputs.periodId,
     };
   }
 
@@ -225,36 +241,55 @@ export class NoirService {
   }
 
   private mapRetirementInputs(inputs: RetirementProofInputs): Record<string, any> {
+    const creditId = creditIdToField(inputs.creditId);
+    const corridorId = this.crypto.toField(inputs.corridorId);
+    const merklePath = inputs.merklePath.map((h) => this.toFieldStr(h));
+    const merkleIndices = inputs.merkleIndices.map((i) => i === 1);
     return {
-      credit_id: inputs.creditId,
-      credit_secret: inputs.creditSecret,
-      credit_hash: inputs.creditHash,
+      credit_id: creditId.toString(),
+      credit_secret: this.crypto.toField(inputs.creditSecret).toString(),
+      credit_hash: this.toFieldStr(inputs.creditHash),
       vintage_year: inputs.vintageYear,
       methodology_code: inputs.methodologyCode,
       permanence_rating: inputs.permanenceRating,
       tonne_volume: inputs.tonneVolume,
-      merkle_path: inputs.merklePath,
-      merkle_indices: inputs.merkleIndices,
-      nullifier: inputs.nullifier,
-      registry_merkle_root: inputs.registryMerkleRoot,
+      merkle_path: merklePath,
+      merkle_indices: merkleIndices,
+      nullifier: this.toFieldStr(inputs.nullifier),
+      registry_merkle_root: this.toFieldStr(inputs.registryMerkleRoot),
       min_vintage_year: inputs.minVintageYear,
       min_permanence: inputs.minPermanence,
-      volume_commitment: inputs.volumeCommitment,
-      corridor_id: inputs.corridorId,
+      volume_commitment: this.toFieldStr(inputs.volumeCommitment),
+      corridor_id: corridorId.toString(),
     };
   }
 
   private mapComplianceInputs(inputs: ComplianceProofInputs): Record<string, any> {
+    const periodId = this.crypto.fieldFromLabel(inputs.periodId);
+    const companySecret = this.crypto.fieldFromLabel(inputs.companySecret);
     return {
-      retirement_nullifiers: inputs.retirementNullifiers,
+      retirement_nullifiers: inputs.retirementNullifiers.map((n) =>
+        this.toFieldStr(n),
+      ),
       retirement_volumes: inputs.retirementVolumes,
       active_count: inputs.activeCount,
-      company_secret: inputs.companySecret,
+      company_secret: companySecret.toString(),
+      nullifier_paths: inputs.nullifierPaths.map((p) =>
+        p.map((h) => this.toFieldStr(h)),
+      ),
+      nullifier_indices: inputs.nullifierIndices.map((level) =>
+        level.map((i) => i === 1),
+      ),
       commitment_threshold: inputs.commitmentThreshold,
-      period_id: inputs.periodId,
-      compliance_nullifier: inputs.complianceNullifier,
-      nullifier_set_root: inputs.nullifierSetRoot,
+      period_id: periodId.toString(),
+      compliance_nullifier: this.toFieldStr(inputs.complianceNullifier),
+      nullifier_set_root: this.toFieldStr(inputs.nullifierSetRoot),
     };
+  }
+
+  /** Render any `0x` hex or decimal string as a decimal field element for Noir. */
+  private toFieldStr(value: string): string {
+    return this.crypto.toField(value).toString();
   }
 
   /** Deterministic pseudo-hash for mock nullifiers (dev only) */

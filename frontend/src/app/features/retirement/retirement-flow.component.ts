@@ -7,7 +7,9 @@ import { WalletConnectComponent } from '../wallet/wallet-connect.component';
 import { CreditPortfolioComponent } from '../credits/credit-portfolio.component';
 import { ProofGenerateComponent } from './proof-generate.component';
 import { Credit } from '../../shared/services/registry.service';
+import { RegistryService } from '../../shared/services/registry.service';
 import { RetirementProof } from '../../shared/services/noir.service';
+import { CryptoService, creditIdToField, TREE_DEPTH } from '../../shared/services/crypto.service';
 import { environment } from '../../../environments/environment';
 
 interface CorridorConfig {
@@ -103,6 +105,10 @@ const CORRIDORS: CorridorConfig[] = [
               <app-proof-generate
                 [inputs]="proofInputs()"
                 (proofGenerated)="onProofGenerated($event)" />
+
+              @if (merkleError()) {
+                <p class="error-text">{{ merkleError() }}</p>
+              }
 
               @if (proofResult()) {
                 <button class="primary-btn" style="margin-top:1.5rem" (click)="goToStep(3)">
@@ -356,6 +362,8 @@ export class RetirementFlowComponent {
   certResult = signal<{ certificateId: string; nullifier: string; txHash: string } | null>(null);
   submitting = signal(false);
   submitError = signal('');
+  merkleProof = signal<{ merklePath: string[]; merkleIndices: number[]; root: string } | null>(null);
+  merkleError = signal('');
 
   readonly steps = [
     { n: 1, label: 'Select & Configure' },
@@ -375,26 +383,43 @@ export class RetirementFlowComponent {
     const corridor = this.selectedCorridor();
     const credit = credits[0];
     if (!credit || !corridor) return null;
+
+    const secret = this.deriveSecret(credit);
+    const merkle = this.merkleProof();
+    const creditId = creditIdToField(credit.creditId);
+    const corridorId = this.crypto.toField(corridor.corridorId);
+    const merklePath = merkle?.merklePath ?? Array(20).fill(this.crypto.zeroHashAt(0));
+    const merkleIndices = merkle?.merkleIndices ?? Array(20).fill(0);
+    const registryMerkleRoot =
+      merkle?.root ?? this.crypto.zeroHashAt(TREE_DEPTH);
+
     return {
       creditId: credit.creditId,
-      creditSecret: this.deriveSecret(credit),
+      creditSecret: secret.toString(),
       creditHash: credit.creditHash,
       vintageYear: credit.vintage,
       methodologyCode: credit.methodologyCode ?? 1,
       permanenceRating: credit.permanenceRating,
       tonneVolume: credit.volume,
-      merklePath: credit.merklePath ?? Array(20).fill('0x' + '0'.repeat(64)),
-      merkleIndices: credit.merkleIndices ?? Array(20).fill(0),
-      nullifier: this.computeNullifier(credit, corridor.corridorId),
-      registryMerkleRoot: credit.merkleRoot ?? '0x' + '0'.repeat(64),
+      merklePath,
+      merkleIndices,
+      nullifier: this.crypto.computeRetirementNullifier(secret, creditId, corridorId),
+      registryMerkleRoot,
       minVintageYear: corridor.minVintage,
       minPermanence: corridor.minPermanence,
-      volumeCommitment: this.computeCommitment(credit.volume),
+      volumeCommitment: this.crypto.computeVolumeCommitment(
+        BigInt(credit.volume),
+        secret,
+      ),
       corridorId: corridor.corridorId,
     };
   });
 
-  constructor(private http: HttpClient) {}
+  constructor(
+    private http: HttpClient,
+    private crypto: CryptoService,
+    private registryService: RegistryService,
+  ) {}
 
   onWalletConnected(address: string) {
     this.walletAddress.set(address);
@@ -402,10 +427,12 @@ export class RetirementFlowComponent {
 
   onCreditsSelected(credits: Credit[]) {
     this.selectedCredits.set(credits);
+    this.loadMerkleProof();
   }
 
   selectCorridor(c: CorridorConfig) {
     this.selectedCorridor.set(c);
+    this.loadMerkleProof();
   }
 
   goToStep(n: number) {
@@ -471,25 +498,30 @@ export class RetirementFlowComponent {
     navigator.clipboard.writeText(val);
   }
 
-  private deriveSecret(credit: Credit): string {
-    // In production: derive from wallet private key + credit ID using HKDF
-    // For dev: deterministic pseudo-secret
-    return '0x' + Array.from(credit.creditId)
-      .reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xffffffff, 0x5eeded)
-      .toString(16).padStart(8, '0').repeat(8);
+  private deriveSecret(credit: Credit): bigint {
+    // In production: derive from wallet private key + credit ID using HKDF.
+    // For dev: deterministic Poseidon-safe field from wallet address + credit id.
+    const seed = `${this.walletAddress() || 'dev'}${credit.creditId}`;
+    return creditIdToField(seed);
   }
 
-  private computeNullifier(credit: Credit, corridorId: string): string {
-    const input = credit.creditId + corridorId;
-    let h = 0x811c9dc5;
-    for (let i = 0; i < input.length; i++) {
-      h ^= input.charCodeAt(i);
-      h = Math.imul(h, 0x01000193);
-    }
-    return '0x' + (h >>> 0).toString(16).padStart(8, '0').repeat(8);
-  }
+  private loadMerkleProof() {
+    const credit = this.selectedCredits()[0];
+    if (!credit) return;
+    this.merkleError.set('');
+    this.merkleProof.set(null);
 
-  private computeCommitment(volume: number): string {
-    return '0x' + volume.toString(16).padStart(64, '0');
+    lastValueFrom(this.registryService.getMerkleProof(credit.creditHash))
+      .then((proof) => {
+        this.merkleProof.set({
+          merklePath: proof.merklePath,
+          merkleIndices: proof.merkleIndices,
+          root: proof.root,
+        });
+      })
+      .catch((err) => {
+        console.warn('Failed to fetch merkle proof:', err);
+        this.merkleError.set('Could not load the registry Merkle proof.');
+      });
   }
 }

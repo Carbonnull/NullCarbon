@@ -1,5 +1,6 @@
 import { Component, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { lastValueFrom } from 'rxjs';
 import { CertificateService } from '../../shared/services/certificate.service';
 
 @Component({
@@ -43,10 +44,8 @@ export class CertificateVerifyComponent {
   async verify() {
     this.verifying = true;
     try {
-      this.result = await this.certificateService
-        .verifyOnChain(this.nullifier)
-        .toPromise()
-        .then((r) => r?.verified ?? false);
+      const res = await lastValueFrom(this.certificateService.verifyOnChain(this.nullifier));
+      this.result = res.verified;
     } catch {
       this.result = false;
     } finally {

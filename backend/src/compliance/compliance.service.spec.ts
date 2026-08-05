@@ -41,12 +41,60 @@ describe('ComplianceService', () => {
     expect(service.computeNullifierSetRoot([])).toBe(crypto.zeroHashAt(0));
   });
 
+  it('provides inclusion proofs that recompute the set root', () => {
+    const nullifiers = [
+      '0x' + '11'.repeat(32),
+      '0x' + '22'.repeat(32),
+      '0x' + '33'.repeat(32),
+    ];
+    const root = service.computeNullifierSetRoot(nullifiers);
+    for (const n of nullifiers) {
+      const proof = service.computeNullifierSetProof(nullifiers, n);
+      expect(proof).not.toBeNull();
+      let computed = n;
+      for (let i = 0; i < proof!.merklePath.length; i++) {
+        computed =
+          proof!.merkleIndices[i] === 0
+            ? crypto.merkleHash(computed, proof!.merklePath[i])
+            : crypto.merkleHash(proof!.merklePath[i], computed);
+      }
+      expect(computed).toBe(root);
+    }
+  });
+
+  it('returns null for a nullifier not in the set', () => {
+    const nullifiers = ['0x' + 'aa'.repeat(32)];
+    expect(
+      service.computeNullifierSetProof(nullifiers, '0x' + 'bb'.repeat(32)),
+    ).toBeNull();
+  });
+
+  it('attaches inclusion proofs to generated claims', async () => {
+    const n = '0x' + 'aa'.repeat(32);
+    await nullifierService.record(n, 'corridor-1', 'devtx_1');
+    const claim = await service.generateComplianceClaim(
+      [n],
+      '2025-Q1',
+      'abc',
+    );
+    expect(claim.nullifierPaths).toBeDefined();
+    expect(claim.nullifierIndices).toBeDefined();
+    expect(claim.nullifierPaths!.length).toBe(1);
+    expect(claim.nullifierPaths![0].length).toBe(20);
+  });
+
   it('produces a consistent compliance nullifier', () => {
     const claim1 = service.generateComplianceClaim([], '2025-Q1', 'abc');
     const claim2 = service.generateComplianceClaim([], '2025-Q1', 'abc');
     return Promise.all([claim1, claim2]).then(([a, b]) => {
       expect(a.complianceNullifier).toBe(b.complianceNullifier);
       expect(a.complianceNullifier).toMatch(/^0x[0-9a-f]{64}$/);
+    });
+  });
+
+  it('accepts non-numeric company secrets (label encoding)', () => {
+    return service.generateComplianceClaim([], '2025-Q1', 'company-1').then((claim) => {
+      expect(claim.complianceNullifier).toMatch(/^0x[0-9a-f]{64}$/);
     });
   });
 

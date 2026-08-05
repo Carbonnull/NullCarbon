@@ -23,5 +23,12 @@ export const routes: Routes = [
         (m) => m.AuditPortalComponent,
       ),
   },
+  {
+    path: 'compliance',
+    loadComponent: () =>
+      import('./features/compliance/net-zero-claim.component').then(
+        (m) => m.NetZeroClaimComponent,
+      ),
+  },
   { path: '**', redirectTo: '/retire' },
 ];

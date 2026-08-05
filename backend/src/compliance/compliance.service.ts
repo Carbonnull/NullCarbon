@@ -9,6 +9,15 @@ export interface ComplianceClaim {
   nullifierSetRoot: string;
   complianceNullifier?: string;
   totalVolume?: number;
+  nullifierPaths?: string[][];
+  nullifierIndices?: number[][];
+}
+
+export interface NullifierSetTree {
+  root: string;
+  leaves: string[];
+  nodes: string[][];
+  depth: number;
 }
 
 export interface ComplianceStatus {
@@ -34,23 +43,61 @@ export class ComplianceService {
    */
   computeNullifierSetRoot(nullifiers: string[]): string {
     if (nullifiers.length === 0) return this.crypto.zeroHashAt(0);
+    return this.buildNullifierSetTree(nullifiers).root;
+  }
 
+  /**
+   * Inclusion proof for a single nullifier inside the nullifier-set tree,
+   * matching what the compliance circuit's `nullifier_paths`/`nullifier_indices`
+   * expect (index 0 = left, 1 = right, sibling at level h of an out-of-range
+   * node is the empty-subtree root `zeroHashAt(h)`).
+   */
+  computeNullifierSetProof(
+    nullifiers: string[],
+    nullifier: string,
+  ): { merklePath: string[]; merkleIndices: number[] } | null {
+    if (nullifiers.length === 0) return null;
+    const tree = this.buildNullifierSetTree(nullifiers);
+    const leafIndex = tree.leaves.indexOf(nullifier);
+    if (leafIndex === -1) return null;
+
+    const merklePath: string[] = [];
+    const merkleIndices: number[] = [];
+    let idx = leafIndex;
+    for (let level = 0; level < tree.depth; level++) {
+      const sibling = idx % 2 === 0 ? idx + 1 : idx - 1;
+      const levelNodes = tree.nodes[level];
+      const siblingNode =
+        levelNodes && sibling < levelNodes.length
+          ? levelNodes[sibling]
+          : this.crypto.zeroHashAt(level);
+      merklePath.push(siblingNode);
+      merkleIndices.push(idx % 2);
+      idx = Math.floor(idx / 2);
+    }
+    return { merklePath, merkleIndices };
+  }
+
+  private buildNullifierSetTree(nullifiers: string[]): NullifierSetTree {
     const size = Math.min(
       Math.pow(2, Math.ceil(Math.log2(nullifiers.length))),
       Math.pow(2, TREE_DEPTH),
     );
-    let layer = [...nullifiers];
+    const leaves = [...nullifiers];
     const zero = this.crypto.zeroHashAt(0);
-    while (layer.length < size) {
-      layer.push(zero);
+    while (leaves.length < size) {
+      leaves.push(zero);
     }
 
+    const nodes: string[][] = [leaves];
+    let layer = leaves;
     let builtLevels = 0;
     while (layer.length > 1) {
       const next: string[] = [];
       for (let i = 0; i < layer.length; i += 2) {
         next.push(this.crypto.merkleHash(layer[i], layer[i + 1]));
       }
+      nodes.push(next);
       layer = next;
       builtLevels++;
     }
@@ -61,7 +108,7 @@ export class ComplianceService {
     for (let level = builtLevels; level < TREE_DEPTH; level++) {
       fullRoot = this.crypto.merkleHash(fullRoot, this.crypto.zeroHashAt(level));
     }
-    return fullRoot;
+    return { root: fullRoot, leaves, nodes, depth: TREE_DEPTH };
   }
 
   async generateComplianceClaim(
@@ -79,15 +126,26 @@ export class ComplianceService {
 
     const nullifierSetRoot = this.computeNullifierSetRoot(verified);
     const complianceNullifier = this.crypto.computeComplianceNullifier(
-      this.crypto.toField(companySecret),
+      // Company secrets are ASCII labels, encoded exactly like period ids.
+      this.crypto.fieldFromLabel(companySecret),
       this.crypto.fieldFromLabel(periodId),
     );
+
+    const nullifierPaths: string[][] = [];
+    const nullifierIndices: number[][] = [];
+    for (const n of verified) {
+      const proof = this.computeNullifierSetProof(verified, n);
+      nullifierPaths.push(proof?.merklePath ?? []);
+      nullifierIndices.push(proof?.merkleIndices ?? []);
+    }
 
     return {
       nullifiers: verified,
       periodId,
       nullifierSetRoot,
       complianceNullifier,
+      nullifierPaths,
+      nullifierIndices,
     };
   }
 

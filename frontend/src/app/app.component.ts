@@ -14,6 +14,7 @@ import { RouterModule } from '@angular/router';
         </a>
         <nav class="nav">
           <a routerLink="/retire" class="nav-link">Retire Credits</a>
+          <a routerLink="/compliance" class="nav-link">Compliance</a>
           <a routerLink="/audit" class="nav-link">Audit Portal</a>
         </nav>
       </div>
